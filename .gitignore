@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 利用者データ・配布成果物
+*.csv
+*.tsv
+*.bak
+*.log
+*.lock
+*.zip
+*.sha256
+settings.json
+
+# 公開する合成サンプル
+!probes/samples/utf8_bom_crlf.csv
+!probes/samples/utf8_lf.csv
+!probes/samples/cp932_crlf.csv
+!probes/samples/utf8_tab_lf.tsv
+!probes/samples/encoding_ambiguous_utf8.csv
+!probes/samples/ascii_only.csv
+!probes/samples/large_size_warning.csv
+!probes/samples/many_cells_warning.csv
