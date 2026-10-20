@@ -8,7 +8,7 @@ from tkinter import filedialog, ttk
 from . import dialogs as messagebox
 
 from tksheet import Sheet
-from .editor import Editor
+from .csv_tools import SortFilterEditor
 from . import __version__
 from . import dialogs as simpledialog
 from .dialogs import show_placed
@@ -166,7 +166,7 @@ class Session:
     def __init__(self, document, use_header):
         self.format = document.format
         self.has_header = use_header
-        self.editor = Editor(document.rows)
+        self.editor = SortFilterEditor(document.rows, header=use_header)
         self.search = SearchState()
 
     def view(self):
@@ -181,7 +181,17 @@ class Session:
         rows = copy.deepcopy(body)
         if header is not None:
             rows.insert(0, header)
+        if self.editor.condition is not None:
+            original = self.editor.rows
+            if len(rows) != len(original):
+                raise ValueError('フィルター中は行数を変更できません。解除してください')
+            visible = set(self.editor.visible_indices())
+            if any(before != after for i, (before, after) in enumerate(zip(original, rows)) if i not in visible):
+                raise ValueError('非表示の行の変更を中止しました。セルを選び直してください')
         return self.editor.replace_rows(rows)
+
+    def visible_body_indices(self):
+        return [i - self.offset for i in self.editor.visible_indices() if i >= self.offset]
 
     def snapshot(self):
         return CsvDocument(self.editor.rows, self.format)
@@ -189,7 +199,9 @@ class Session:
     def set_header_view(self, enabled):
         if type(enabled) is not bool:
             raise TypeError('見出し表示は有効・無効で指定してください。')
-        self.has_header = enabled
+        if self.editor.condition is not None:
+            raise ValueError('見出し切替前にフィルターを解除してください')
+        self.has_header = self.editor.header = enabled
 
 
 class SheetDockApp(CsvWindow):

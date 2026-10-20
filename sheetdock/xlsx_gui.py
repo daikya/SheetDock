@@ -23,8 +23,10 @@ from .storage import ExternalChangeError, fingerprint, save_lock
 from .csv_io import CsvDocument, CsvFormat, save_csv
 from .xlsx_storage import load_checked, save_checked
 from .xlsx_axis import AxisOperations, VIEW_ROWS, VIEW_COLUMNS, HISTORY_LIMIT
-from .xlsx_extent import extent, data_extent, check_area
+from .xlsx_extent import extent, extents, data_extent, check_area
 from .xlsx_inline import InlineEditing, settled
+from .xlsx_tools import SortFilterOperations
+from .xlsx_tools_gui import XlsxToolsPane
 from . import xlsx_heights
 from .heights import accumulate_row_resize
 from .xlsx_tabs import SheetTabs
@@ -116,7 +118,7 @@ def restore_cell(cell, state):
     cell._value, cell.data_type, cell._style = state[0], state[1], copy(state[2])
 
 
-class XlsxSession(AxisOperations):
+class XlsxSession(SortFilterOperations, AxisOperations):
     def __init__(self, path):
         self.probe, self.stamp = load_checked(path)
         try:
@@ -129,6 +131,7 @@ class XlsxSession(AxisOperations):
         self.sheet_name = self.probe.book.active.title
         self.saved_values = self.values()
         self.undo_stack, self.redo_stack = [], []
+        self.filters, self.filter_headers = {}, {}
 
     @property
     def sheet(self):
@@ -143,12 +146,41 @@ class XlsxSession(AxisOperations):
         return self.values() != self.saved_values
 
     def edit(self, row, column, text):
+        if self.filtered and row + 1 not in self.visible_rows():
+            raise ValueError('表示中の本文セルを選択してください')
         return self.apply_rows(row, column, [[text]])
 
     def paste(self, row, column, text):
-        return self.apply_rows(row, column, clipboard_rows(text))
+        rows = clipboard_rows(text)
+        if self.filtered:
+            mapping = self.visible_rows()
+            if row + 1 not in mapping:
+                raise ValueError('表示中の本文セルを選択してください')
+            start = mapping.index(row + 1)
+            targets = mapping[start:start + len(rows)]
+            if len(targets) != len(rows):
+                raise ValueError('貼り付けが表示範囲を超えます。全体を中止しました')
+            return self.apply_rows(0, column, rows, targets=targets)
+        return self.apply_rows(row, column, rows)
 
-    def apply_rows(self, row, column, rows):
+    @property
+    def filtered(self):
+        return self.sheet_name in self.filters
+
+    def displayed_indices(self):
+        """Data indices for the native view, including an exempt heading row."""
+        if not self.filtered:
+            return list(range(min(extent(self.sheet)[0], VIEW_ROWS)))
+        condition = self.filters[self.sheet_name]
+        first = self.sheet.row_dimensions.get(1)
+        heading = condition[3] and not (first is not None and (first.hidden or first.height == 0))
+        return ([0] if heading else []) + [row - 1 for row in self.visible_rows()]
+
+    def require_clear_filters(self):
+        if self.filters:
+            raise ValueError('この操作の前にブック内のフィルターをすべて解除してください')
+
+    def apply_rows(self, row, column, rows, *, targets=None):
         if self.probe.read_only:
             raise ProtectedCellError('ブックは読み取り専用です')
         if not rows:
@@ -157,8 +189,17 @@ class XlsxSession(AxisOperations):
         if (row < 0 or column < 0 or row + len(rows) > min(extent(sheet)[0], VIEW_ROWS)
                 or column + len(rows[0]) > min(extent(sheet)[1], VIEW_COLUMNS)):
             raise ValueError('貼り付け先は現在表示中の行列範囲内を指定してください')
+        if not rows[0] or any(len(values) != len(rows[0]) for values in rows):
+            raise ValueError('貼り付け範囲の列数をそろえてください')
+        if any(not isinstance(text, str) for values in rows for text in values):
+            raise TypeError('文字列の入力を指定してください')
+        if targets is None:
+            targets = list(range(row + 1, row + len(rows) + 1))
+        if (len(targets) != len(rows) or len(set(targets)) != len(targets)
+                or any(type(r) is not int or not 1 <= r <= min(extent(sheet)[0], VIEW_ROWS) for r in targets)):
+            raise ValueError('貼り付け先の行指定が不正です')
         pending = []
-        for r, values in enumerate(rows, row + 1):
+        for r, values in zip(targets, rows):
             for c, text in enumerate(values, column + 1):
                 cell = sheet.cell(r, c)
                 reason = protection_reason(self.probe, sheet, cell)
@@ -187,6 +228,7 @@ class XlsxSession(AxisOperations):
         source, target = (self.redo_stack, self.undo_stack) if redo else (self.undo_stack, self.redo_stack)
         if not source:
             return False
+        old_names, old_bounds = tuple(self.probe.book.sheetnames), extents(self.probe.book)
         name, changes = source[-1]
         if isinstance(changes, dict) and changes.get('kind') == 'widths':
             restore_dimensions(self.probe.book[name], changes['after' if redo else 'before'])
@@ -203,6 +245,11 @@ class XlsxSession(AxisOperations):
             for sheet_name, address, before, after in changes:
                 restore_cell(self.probe.book[sheet_name][address], after if redo else before)
             self.sheet_name = name
+        if old_names != tuple(self.probe.book.sheetnames):
+            self.filters.clear()
+            self.filter_headers.clear()
+        elif old_bounds != extents(self.probe.book):
+            self.filters.clear()
         source.pop()
         target.append((name, changes))
         return True
@@ -240,6 +287,8 @@ class XlsxSession(AxisOperations):
         return xlsx_heights.display_heights(self.sheet, min(extent(self.sheet)[0], VIEW_ROWS), scale, minimum)
 
     def resize_rows(self, changes, scale=4/3, minimum=5):
+        if self.filtered:
+            raise ProtectedCellError('行の高さ変更の前にフィルターを解除してください')
         if self.probe.read_only:
             raise ProtectedCellError('読み取り専用のブックは行の高さを変更できません')
         current = self.row_heights(scale, minimum)
@@ -265,7 +314,14 @@ class XlsxSession(AxisOperations):
         self.redo_stack.clear()
         return True
 
+    def axis_reason(self):
+        if self.filtered:
+            return '行列操作の前にフィルターを解除してください'
+        return super().axis_reason()
+
     def structure_reason(self, operation):
+        if self.filters:
+            return 'シート操作の前にブック内のフィルターをすべて解除してください'
         if self.probe.read_only:
             return 'ブックは読み取り専用です'
         if operation in {'rename', 'delete'} and any(c.data_type == 'f' for s in self.probe.book for row in s for c in row):
@@ -335,6 +391,7 @@ class XlsxSession(AxisOperations):
         return True
 
     def find(self, query, *, all_sheets=True, include_formulas=False):
+        self.require_clear_filters()
         if not query:
             raise ValueError('検索文字列を入力してください')
         result = []
@@ -349,6 +406,7 @@ class XlsxSession(AxisOperations):
         return result
 
     def replace_match(self, match, query, replacement):
+        self.require_clear_filters()
         if self.probe.read_only:
             raise ProtectedCellError('ブックは読み取り専用です')
         if not query or not isinstance(replacement, str):
@@ -381,6 +439,7 @@ class XlsxSession(AxisOperations):
         return True
 
     def replace_all(self, query, replacement, *, all_sheets=True):
+        self.require_clear_filters()
         if self.probe.read_only:
             raise ProtectedCellError('ブックは読み取り専用です')
         matches = self.find(query, all_sheets=all_sheets, include_formulas=True)
@@ -455,7 +514,7 @@ class XlsxSession(AxisOperations):
         self.saved_values = self.values()
 
 
-class XlsxPane(InlineEditing):
+class XlsxPane(XlsxToolsPane, InlineEditing):
     def __init__(self, parent, *, owner=None, on_change=None, on_open=None,
                  on_save=None, on_save_as=None, backup_var=None, check_export=None,
                  on_backup_change=None, on_selection=None):
@@ -561,6 +620,7 @@ class XlsxPane(InlineEditing):
                   '灰色＝保護セル。数式は文字列表示、結合範囲は分けて表示。先頭1000行×50列まで。',
                   wraplength=950).grid(row=7, column=0, sticky='ew', padx=8, pady=4)
         self.setup_inline()
+        self.setup_xlsx_tools(tools)
 
     def confirm_discard(self):
         return self.finish_inline_edit() and (not self.session or not self.session.dirty or messagebox.askyesno(
@@ -602,6 +662,7 @@ class XlsxPane(InlineEditing):
         data = [[format_value(sheet.cell(r, c).value, sheet.cell(r, c).number_format)[0]
                  for c in range(1, columns + 1)]
                 for r in range(1, rows + 1)]
+        self.sheet_widget.display_rows('all', redraw=False)
         self.sheet_widget.set_sheet_data(data, delete_options=True)
         self.sheet_widget.headers([get_column_letter(c) for c in range(1, columns + 1)])
         self._digit_width = self.measure_digit_width()
@@ -632,11 +693,14 @@ class XlsxPane(InlineEditing):
                     bg, fg = '#e5e7eb', '#374151'
                 if bg or fg:
                     self.sheet_widget.highlight_cells(r, c, bg=bg or False, fg=fg or False, redraw=False)
+        self.apply_xlsx_filter()
         self.sheet_widget.refresh()
         mode = '読み取り専用' if session.probe.read_only else '対応範囲内'
-        self.status.set(f'{sheet.title} / {mode} / 表示 {rows}行×{columns}列（表示範囲全体 {extent(sheet)[0]}行×{extent(sheet)[1]}列）')
-        self.replace_button.configure(state='disabled' if session.probe.read_only else 'normal')
-        self.replace_one_button.configure(state='disabled' if session.probe.read_only else 'normal')
+        self.status.set(f'{sheet.title} / {mode} / 表示 {rows}行×{columns}列（表示範囲全体 {extent(sheet)[0]}行×{extent(sheet)[1]}列）'
+                        + (f' / フィルター本文 {len(session.visible_rows())}行 / 保存・CSV出力は全行' if session.filtered else ''))
+        self.replace_button.configure(state='disabled' if session.probe.read_only or session.filters else 'normal')
+        self.replace_one_button.configure(state='disabled' if session.probe.read_only or session.filters else 'normal')
+        self.sync_xlsx_tools()
         self.sheet_tabs.sync(session.probe.book.sheetnames, session.sheet_name)
         for operation, button in self.structure_buttons.items():
             button.configure(state='disabled' if session.structure_reason(operation) else 'normal')
@@ -683,7 +747,7 @@ class XlsxPane(InlineEditing):
             messagebox.showerror('列幅変更失敗', str(exc), parent=self.root)
 
     def row_resized(self, event):
-        if self._rendering or self.session is None:
+        if self._rendering or self.session is None or self.session.filtered:
             return
         accumulate_row_resize(self._pending_row_sizes, event)
         if not self.sheet_widget.RI.currently_resizing_height:
@@ -694,7 +758,8 @@ class XlsxPane(InlineEditing):
             self._pending_row_sizes = {}
             self.render()
             return
-        if self._rendering or self.session is None:
+        if self._rendering or self.session is None or self.session.filtered:
+            self._pending_row_sizes = {}
             return
         pending, self._pending_row_sizes = self._pending_row_sizes, {}
         changes = {row: new for row, (old, new) in pending.items() if old != new}
@@ -709,7 +774,7 @@ class XlsxPane(InlineEditing):
     @settled
     def set_row_height(self):
         cell = self.selected_cell()
-        if cell is None or self.session.probe.read_only:
+        if cell is None or self.session.probe.read_only or not self.require_unfiltered_xlsx():
             return
         try:
             pixels = simpledialog.askinteger('行の高さ', '選択行の高さ（ピクセル）', parent=self.root,
@@ -739,9 +804,16 @@ class XlsxPane(InlineEditing):
         selected = self.sheet_widget.get_currently_selected()
         if not self.session or not selected:
             return None
-        if selected.row >= min(extent(self.session.sheet)[0], VIEW_ROWS) or selected.column >= min(extent(self.session.sheet)[1], VIEW_COLUMNS):
+        if self.session.filtered:
+            indices = self.session.displayed_indices()
+            if self.sheet_widget.display_rows() != indices or not 0 <= selected.row < len(indices):
+                return None
+            row = indices[selected.row]
+        else:
+            row = selected.row
+        if row < 0 or row >= min(extent(self.session.sheet)[0], VIEW_ROWS) or selected.column >= min(extent(self.session.sheet)[1], VIEW_COLUMNS):
             return None
-        return self.session.sheet.cell(selected.row + 1, selected.column + 1)
+        return self.session.sheet.cell(row + 1, selected.column + 1)
 
     def selection_changed(self, event=None):
         self.update_axis_commands()
@@ -750,7 +822,7 @@ class XlsxPane(InlineEditing):
             if getattr(self, '_on_selection', None):
                 self._on_selection()
             return
-        reason = protection_reason(self.session.probe, self.session.sheet, cell)
+        reason = self.filtered_cell_reason(cell) or protection_reason(self.session.probe, self.session.sheet, cell)
         text, supported = format_value(cell.value, cell.number_format)
         extra = ''
         if not supported:
@@ -767,7 +839,7 @@ class XlsxPane(InlineEditing):
         for name in ('height_button', 'width_button'):
             button = getattr(self, name, None)
             if button is not None:
-                button.configure(state='normal' if editable else 'disabled')
+                button.configure(state='normal' if editable and not (name == 'height_button' and self.session.filtered) else 'disabled')
         for axis, button in getattr(self, 'append_buttons', {}).items():
             enabled = (self.session is not None and not self.session.probe.read_only
                        and not getattr(self, '_axis_block_reason', '未読込'))
@@ -871,7 +943,7 @@ class XlsxPane(InlineEditing):
         cell = self.selected_cell()
         if cell is None:
             return
-        reason = protection_reason(self.session.probe, self.session.sheet, cell)
+        reason = self.filtered_cell_reason(cell) or protection_reason(self.session.probe, self.session.sheet, cell)
         if reason:
             messagebox.showinfo('編集制限', reason, parent=self.root)
             return
@@ -984,7 +1056,7 @@ class XlsxPane(InlineEditing):
 
     @settled
     def find_next(self, backward=False):
-        if not self.session:
+        if not self.session or not self.require_unfiltered_xlsx(all_sheets=True):
             return
         try:
             match = self.search_tracker.move(self.session, self.query.get(),
@@ -995,7 +1067,7 @@ class XlsxPane(InlineEditing):
 
     @settled
     def replace_one(self):
-        if not self.session or self.session.probe.read_only:
+        if not self.session or self.session.probe.read_only or not self.require_unfiltered_xlsx(all_sheets=True):
             return
         try:
             # Require a current, verified search result before replacing.
@@ -1025,7 +1097,7 @@ class XlsxPane(InlineEditing):
 
     @settled
     def replace_all(self):
-        if not self.session or self.session.probe.read_only:
+        if not self.session or self.session.probe.read_only or not self.require_unfiltered_xlsx(all_sheets=True):
             return
         if not messagebox.askyesno('一括置換', '文字列セルだけを置換します。保護セル・数値・日時・真偽値は除外します。実行しますか？', parent=self.root):
             return
@@ -1050,7 +1122,7 @@ class XlsxPane(InlineEditing):
                 self._check_export(target)
             mode = 'text' if self.formula_export.current() == 1 else 'reject'
             self.session.export_csv(target, formulas=mode)
-            messagebox.showinfo('CSV出力完了', '選択シートの値をCSVへ出力しました。XLSXの保存状態は変わりません。\n数式文字列は、Excel等で開くと数式として解釈される場合があります。', parent=self.root)
+            messagebox.showinfo('CSV出力完了', '非表示行を含む選択シートの全行をCSVへ出力しました。XLSXの保存状態は変わりません。\n数式文字列は、Excel等で開くと数式として解釈される場合があります。', parent=self.root)
         except Exception as exc:
             messagebox.showerror('CSV出力失敗', str(exc), parent=self.root)
 

@@ -4,7 +4,7 @@ from tkinter import filedialog, ttk
 
 from . import dialogs as messagebox
 from .diagnostics import record_failure
-from .gui import MultiFileApp
+from .csv_tools_gui import CsvToolsApp, INPUT_CLASSES, history_shortcut
 from .storage import fingerprint
 from .xlsx_gui import XlsxPane, XlsxSession, protection_reason
 
@@ -13,16 +13,32 @@ def is_xlsx(tab):
     return tab is not None and isinstance(tab.session, XlsxSession)
 
 
-class SheetDockApp(MultiFileApp):
+class SheetDockApp(CsvToolsApp):
     def __init__(self, root):
         super().__init__(root)
         self.build_shared_layout(root)
         for keys, redo in [('<Control-z>', False), ('<Control-Z>', False),
                            ('<Control-Shift-z>', True), ('<Control-Shift-Z>', True)]:
-            root.bind(keys, lambda event, redo=redo: self.history(redo))
+            root.bind(keys, lambda event, redo=redo: self.model_history_key(event, redo))
         root.bind('<Control-S>', lambda event: (self.save_current(), 'break')[1])
         root.bind('<Control-f>', lambda event: (self.find(), 'break')[1])
         self.status.set('CSV / TSV / XLSXを開いてください。')
+        self.setup_csv_tools(root)
+
+    def csv_key(self, event):
+        if is_xlsx(self.active):
+            if event.widget.winfo_class() in INPUT_CLASSES:
+                return None
+            system = self.root.tk.call('tk', 'windowingsystem')
+            redo = history_shortcut(event, system)
+            if redo is not None:
+                self.history(redo)
+                return 'break'
+            if event.state & 4 and (event.keysym.lower() == 'v' or (system == 'win32' and event.keycode == 86)):
+                self.pane().paste()
+                return 'break'
+            return None
+        return super().csv_key(event)
 
     def build_shared_layout(self, root):
         # Reserve toolbar/footer rows before assigning remaining space to the table.
@@ -75,6 +91,8 @@ class SheetDockApp(MultiFileApp):
     def xlsx_action(self, action):
         if is_xlsx(self.active):
             return getattr(self.pane(), action)()
+        if action == 'paste' and self.csv_filtered():
+            return self.paste_filtered()
 
     def update_commands(self):
         if not getattr(self, 'layout_ready', False):
@@ -85,10 +103,10 @@ class SheetDockApp(MultiFileApp):
         session = self.active.session if xlsx_active else None
         editable = xlsx_active and not session.probe.read_only
         selected = pane.selected_cell() if xlsx_active else None
-        cell_editable = editable and selected is not None and not protection_reason(session.probe, session.sheet, selected)
+        cell_editable = editable and selected is not None and not protection_reason(session.probe, session.sheet, selected) and (not session.filtered or selected.row in session.visible_rows())
         states = {'undo': csv_active or (editable and bool(session.undo_stack)),
                   'redo': csv_active or (editable and bool(session.redo_stack)),
-                  'find': self.active is not None, 'edit': cell_editable,
+                  'find': self.active is not None and not (xlsx_active and session.filters), 'edit': cell_editable,
                   'paste': cell_editable, 'export': xlsx_active}
         for name, button in self.command_buttons.items():
             button.configure(state='normal' if states[name] else 'disabled')
@@ -111,6 +129,7 @@ class SheetDockApp(MultiFileApp):
             else:
                 self.csv_encoding_actions.grid_remove()
                 self.row_column_actions.grid_remove()
+        self.refresh_csv_tools()
 
     def pane(self, tab=None):
         tab = self.active if tab is None else tab
@@ -234,7 +253,8 @@ class SheetDockApp(MultiFileApp):
             session = self.active.session
             mode = '読取専用' if session.probe.read_only else 'XLSX'
             dirty = 'あり' if session.dirty else 'なし'
-            self.status.set(f'{notice} {session.probe.path} / {mode} / 未保存={dirty}')
+            self.status.set(f'{notice} {session.probe.path} / {mode} / 未保存={dirty}'
+                            + (f' / フィルター本文 {len(session.visible_rows())}行 / 保存・CSV出力は全行' if session.filtered else ''))
             return
         return super().format_status(notice)
 
@@ -265,6 +285,8 @@ class SheetDockApp(MultiFileApp):
         if not self.finish_xlsx_edit():
             return
         if is_xlsx(self.active):
+            if not self.pane().require_unfiltered_xlsx(all_sheets=True):
+                return
             self.pane().query_entry.focus_set()
             return
         return super().find()

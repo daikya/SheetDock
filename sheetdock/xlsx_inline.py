@@ -10,8 +10,9 @@ from .xlsx_axis import VIEW_ROWS, VIEW_COLUMNS
 
 class InlineBridge:
     """Validate a single widget edit through the authoritative workbook session."""
-    def __init__(self, session, refresh, notice):
+    def __init__(self, session, refresh, notice, coordinates=None):
         self.session, self.refresh, self.notice = session, refresh, notice
+        self.coordinates = coordinates or (lambda row, column: (row, column))
         self.context = None
         self.last_error = None
         self.pending_error = None
@@ -23,8 +24,12 @@ class InlineBridge:
             return None
         self.context, self.last_error = None, None
         session = self.session
-        row, column = event['row'], event['column']
         if session is None:
+            return None
+        try:
+            row, column = self.coordinates(event['row'], event['column'])
+        except (ValueError, IndexError) as error:
+            self.notice(str(error))
             return None
         rows, columns = extent(session.sheet)
         if not (0 <= row < min(rows, VIEW_ROWS) and 0 <= column < min(columns, VIEW_COLUMNS)):
@@ -35,7 +40,7 @@ class InlineBridge:
         if reason:
             self.notice(reason)
             return None
-        self.context = (session, session.probe.book, session.sheet_name, row, column, cell_state(cell))
+        self.context = (session, session.probe.book, session.sheet_name, row, column, cell_state(cell), tuple(sorted(session.filters.items())))
         # Double click/F2/Return starts with raw data, not formatted display text.
         # Character typing and BackSpace retain the widget's replace-input behavior.
         return display_value(cell.value) if event.get('key', '??') in {'??', 'F2', 'Return'} else event['value']
@@ -46,9 +51,10 @@ class InlineBridge:
         try:
             if context is None:
                 raise ValueError('編集開始情報がありません。セルを選び直してください')
-            session, book, name, row, column, before = context
+            session, book, name, row, column, before, conditions = context
             if (session is not self.session or book is not session.probe.book or name != session.sheet_name
-                    or (row, column) != (event['row'], event['column'])):
+                    or conditions != tuple(sorted(session.filters.items()))
+                    or (row, column) != self.coordinates(event['row'], event['column'])):
                 raise ValueError('編集中に対象が変わりました。再度入力してください')
             cell = session.sheet.cell(row + 1, column + 1)
             if cell_state(cell) != before:
@@ -81,7 +87,8 @@ def settled(method):
 class InlineEditing:
     def setup_inline(self):
         self._inline_flush_id = None
-        self._inline = InlineBridge(self.session, self.queue_inline_refresh, self.detail.set)
+        self._inline = InlineBridge(self.session, self.queue_inline_refresh, self.detail.set,
+            coordinates=getattr(self, 'inline_coordinates', None))
         sheet = self.sheet_widget
         sheet.extra_bindings('begin_edit_cell', self.begin_inline_edit)
         sheet.edit_validation(self._inline.validate)
@@ -125,6 +132,18 @@ class InlineEditing:
             self.root.after_cancel(self._inline_flush_id)
             self._inline_flush_id = None
         error, self._inline.pending_error = self._inline.pending_error, None
+        if self.session and self.session.filtered:
+            if self.sheet_widget.MT.text_editor.open:
+                self._inline.pending_error = error
+                self._inline_flush_id = self.root.after(80, self.flush_inline_edit)
+                return
+            rendering = self._rendering
+            self._rendering = True
+            try:
+                self.apply_xlsx_filter()
+                self.sheet_widget.refresh()
+            finally:
+                self._rendering = rendering
         # Native validation has already updated the formatted cell display.
         # Refresh controls only; a new editor may already be open.
         self.selection_changed()
@@ -146,11 +165,15 @@ class InlineEditing:
             # close method refuses to commit when focus is None, so settle the
             # same validated model transaction without depending on Tk focus.
             row, column = editor.coords
+            try:
+                target_row, target_column = bridge.coordinates(row, column)
+            except (ValueError, IndexError):
+                target_row, target_column = row, column
             display = bridge.validate({'row': row, 'column': column,
                                        'value': self.sheet_widget.get_text_editor_value()})
             self.sheet_widget.MT.hide_text_editor_and_dropdown()
             if display is not None:
-                self.sheet_widget.set_cell_data(row, column, value=display, redraw=True)
+                self.sheet_widget.set_cell_data(target_row, target_column, value=display, redraw=True)
         if self._inline_flush_id is not None:
             self.flush_inline_edit()
         return not (pending_error or was_open and bridge.last_error)

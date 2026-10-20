@@ -14,3 +14,5 @@ dist/
 /probes/xlsx_append_samples/
 /probes/xlsx_axis_samples/
 /probes/xlsx_inline_samples/
+/probes/sort_filter_samples/
+/probes/xlsx_sort_filter_samples/
