@@ -21,6 +21,7 @@ from .tabs import path_key
 from .diagnostics import configure_logging, record_failure, shutdown_logging
 from .large_csv import large_file, large_table, table_size, FILE_WARNING_BYTES
 from .icons import apply_icon
+from .heights import MAX_HEIGHT, accumulate_row_resize
 
 
 def split_rows(rows, use_header):
@@ -55,6 +56,7 @@ class CsvWindow:
         self.use_header = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value='読込条件を選んでCSVを開いてください。')
         controls = ttk.Frame(root)
+        self.csv_options = controls
         controls.pack(fill='x', padx=10, pady=10)
         ttk.Label(controls, text='次に開くCSV：文字コード').pack(side='left')
         ttk.Combobox(controls, textvariable=self.encoding, values=('自動', 'utf-8', 'cp932'), state='readonly', width=10).pack(side='left', padx=5)
@@ -74,12 +76,15 @@ class CsvWindow:
         )
         self.sheet.set_options(paste_can_expand_x=False, paste_can_expand_y=False)
         actions = ttk.Frame(root)
+        self.csv_actions = actions
         actions.pack(fill='x', padx=10, pady=5)
         ttk.Button(actions, text='Undo', command=self.sheet.undo).pack(side='left')
         ttk.Button(actions, text='Redo', command=self.sheet.redo).pack(side='left', padx=5)
         ttk.Button(actions, text='検索・置換', command=lambda: self.sheet.open_find(focus=True)).pack(side='left')
-        ttk.Label(root, text='見出しは表示専用。読込条件の変更は次に開くファイルから適用します。').pack(anchor='w', padx=10)
-        ttk.Label(root, textvariable=self.status, wraplength=1050).pack(anchor='w', padx=10, pady=10)
+        self.guidance_label = ttk.Label(root, text='見出しは表示専用。読込条件の変更は次に開くファイルから適用します。')
+        self.guidance_label.pack(anchor='w', padx=10)
+        self.status_label = ttk.Label(root, textvariable=self.status, wraplength=1050)
+        self.status_label.pack(anchor='w', padx=10, pady=10)
 
     def snapshot(self):
         # 保存ボタン操作時に編集中のセル値を確定する。
@@ -207,6 +212,7 @@ class SheetDockApp(CsvWindow):
         root.bind('<Control-Shift-Z>', lambda event: self.history(True))
         root.bind('<Control-Shift-z>', lambda event: self.history(True))
         toolbar = ttk.Frame(root)
+        self.row_column_actions = toolbar
         toolbar.pack(fill='x', padx=10, pady=5)
         for label, action in [('行を挿入', lambda: self.insert(False)), ('選択行を削除', lambda: self.delete(False)), ('列を挿入', lambda: self.insert(True)), ('選択列を削除', lambda: self.delete(True)), ('見出し編集', self.edit_header), ('一括置換', self.replace)]:
             ttk.Button(toolbar, text=label, command=action).pack(side='left', padx=3)
@@ -232,7 +238,7 @@ class SheetDockApp(CsvWindow):
             self.sheet.set_sheet_data(body, delete_options=True)
             self.sheet.headers(header if header is not None else [])
             self.sheet.reset_undos()
-            self.status.set(f'{self.source} / 未保存={self.session.editor.dirty}')
+            self.status.set(f'{self.source} / 未保存={"あり" if self.session.editor.dirty else "なし"}')
         finally:
             self.rendering = False
 
@@ -243,7 +249,7 @@ class SheetDockApp(CsvWindow):
             self.session.accept_body(self.sheet.get_sheet_data())
             # tksheet内部の履歴は保持しない。
             self.sheet.reset_undos()
-            self.status.set(f'{self.source} / 未保存={self.session.editor.dirty}')
+            self.status.set(f'{self.source} / 未保存={"あり" if self.session.editor.dirty else "なし"}')
         except Exception as exc:
             record_failure('edit', exc)
             self.render()
@@ -358,6 +364,8 @@ class MultiFileApp(SheetDockApp):
         self.search_window = None
         self.applying_widths = False
         super().__init__(root)
+        ttk.Button(self.row_column_actions, text='行の高さ', command=self.set_row_height).pack(side='left', padx=3)
+        ttk.Button(self.row_column_actions, text='列の幅', command=self.set_column_width).pack(side='left', padx=3)
         old_sheet = self.sheet
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill='both', expand=True, padx=10, pady=5, before=old_sheet)
@@ -367,6 +375,7 @@ class MultiFileApp(SheetDockApp):
         controls = root.winfo_children()[0]
         ttk.Button(controls, text='保存', command=self.save_current).pack(side='left', padx=5)
         encoding_actions = ttk.Frame(root)
+        self.csv_encoding_actions = encoding_actions
         encoding_actions.pack(fill='x', padx=10, before=self.notebook)
         ttk.Button(encoding_actions, text='文字コードで再読込', command=self.reopen_encoding).pack(side='left', padx=5)
         self.header_display = tk.BooleanVar(value=False)
@@ -398,7 +407,9 @@ class MultiFileApp(SheetDockApp):
     def load_widths(self, tab):
         store = getattr(self, 'settings_store', None)
         if store is not None:
-            tab.session.editor.set_column_widths(store.load().file_widths.get(path_key(tab.source), []))
+            saved = store.load()
+            tab.session.editor.set_column_widths(saved.file_widths.get(path_key(tab.source), []))
+            tab.session.editor.set_row_heights(getattr(saved, 'file_heights', {}).get(path_key(tab.source), []))
 
     def capture_widths(self, tab, persist=False):
         if self.applying_widths or tab not in self.pages:
@@ -412,14 +423,93 @@ class MultiFileApp(SheetDockApp):
         if store is None or tab.session.editor.dirty:
             return
         try:
-            self.settings = store.update(widths_file=tab.source, column_widths=tab.session.editor.column_widths)
+            self.settings = store.update(widths_file=tab.source, column_widths=tab.session.editor.column_widths,
+                                         heights_file=tab.source, row_heights=tab.session.editor.row_heights)
         except Exception as exc:
             record_failure('widths_save', exc, warning=True)
-            messagebox.showwarning('列幅保存失敗', str(exc), parent=self.root)
+            messagebox.showwarning('表示サイズ保存失敗', str(exc), parent=self.root)
 
     def page_resized(self, tab):
-        if not self.rendering:
-            self.capture_widths(tab, persist=True)
+        if self.rendering or self.applying_widths or tab not in self.pages:
+            return
+        sheet = self.pages[tab][1]
+        # Motion events arrive throughout a drag. Record only the final width
+        # after tksheet's ButtonRelease handler has finished.
+        if sheet.CH.currently_resizing_width:
+            return
+        if tab.session.editor.resize_columns(sheet.get_column_widths()):
+            self.persist_widths(tab)
+
+    def history(self, redo):
+        result = super().history(redo)
+        if self.active is not None:
+            self.persist_widths(self.active)
+        return result
+
+    def apply_row_heights(self, tab, sheet):
+        minimum = sheet.MT.min_row_height
+        default = sheet.MT.get_default_row_height()
+        values = tab.session.editor.row_heights[tab.session.offset:]
+        sheet.set_row_heights([max(minimum, height if height is not None else default) for height in values])
+        sheet.refresh()
+
+    def row_resized(self, tab, event):
+        if self.rendering or self.applying_widths:
+            return
+        sheet = self.pages[tab][1]
+        accumulate_row_resize(sheet._sheetdock_height_drag, event)
+        if not sheet.RI.currently_resizing_height:
+            self.finish_row_resize(tab)
+
+    def finish_row_resize(self, tab):
+        if self.rendering or self.applying_widths:
+            return
+        sheet = self.pages[tab][1]
+        pending, sheet._sheetdock_height_drag = sheet._sheetdock_height_drag, {}
+        changes = {row + tab.session.offset: new for row, (old, new) in pending.items() if old != new}
+        try:
+            if changes and tab.session.editor.resize_rows(changes):
+                self.persist_widths(tab)
+        except Exception as exc:
+            self.render()
+            messagebox.showerror('行の高さ変更失敗', str(exc), parent=self.root)
+
+    def set_row_height(self):
+        if self.active is None or self.session is None:
+            return
+        selected = self.sheet.get_currently_selected()
+        if not selected:
+            messagebox.showinfo('選択', '高さを変更する行のセルを選択してください', parent=self.root)
+            return
+        row = selected.row
+        current = self.sheet.get_row_heights()
+        if not 0 <= row < len(current):
+            return
+        pixels = simpledialog.askinteger('行の高さ', '選択行の高さ（ピクセル）', parent=self.root,
+            initialvalue=round(current[row]), minvalue=self.sheet.MT.min_row_height, maxvalue=MAX_HEIGHT)
+        if pixels is not None and pixels != current[row]:
+            self.session.editor.resize_rows({row + self.session.offset: pixels})
+            self.render()
+            self.persist_widths(self.active)
+
+    def set_column_width(self):
+        if self.active is None or self.session is None:
+            return
+        selected = self.sheet.get_currently_selected()
+        if not selected:
+            messagebox.showinfo('選択', '幅を変更する列のセルを選択してください', parent=self.root)
+            return
+        column = selected.column
+        current = list(self.sheet.get_column_widths())
+        if not 0 <= column < len(current):
+            return
+        pixels = simpledialog.askinteger('列の幅', '選択列の幅（ピクセル）', parent=self.root,
+            initialvalue=round(current[column]), minvalue=self.sheet.ops.min_column_width, maxvalue=5000)
+        if pixels is not None and pixels != current[column]:
+            current[column] = pixels
+            if self.session.editor.resize_columns(current):
+                self.render()
+                self.persist_widths(self.active)
 
     def backup_is_enabled(self):
         variable = getattr(self, 'backup_enabled', None)
@@ -668,6 +758,11 @@ class MultiFileApp(SheetDockApp):
         sheet.set_options(paste_can_expand_x=False, paste_can_expand_y=False)
         sheet.bind('<<SheetModified>>', lambda event: self.page_modified(tab))
         sheet.extra_bindings('column_width_resize', lambda event: self.page_resized(tab))
+        sheet.CH.bind('<ButtonRelease-1>', lambda event: self.page_resized(tab), add='+')
+        sheet._sheetdock_height_drag = {}
+        sheet.set_options(max_row_height=MAX_HEIGHT)
+        sheet.extra_bindings('row_height_resize', lambda event: self.row_resized(tab, event))
+        sheet.RI.bind('<ButtonRelease-1>', lambda event: self.finish_row_resize(tab), add='+')
         self.pages[tab] = (page, sheet)
         self.notebook.add(page, text=tab.title)
 
@@ -688,6 +783,7 @@ class MultiFileApp(SheetDockApp):
         self.applying_widths = True
         try:
             self.sheet.set_column_widths(self.session.editor.column_widths)
+            self.apply_row_heights(self.active, self.sheet)
         finally:
             self.applying_widths = False
         self.format_status()
@@ -771,6 +867,7 @@ class MultiFileApp(SheetDockApp):
         if not selected:
             return False
         try:
+            self.validate_save_extension(tab, selected)
             self.documents.check_save_as(tab, selected)
             self.check_backup_target(selected)
             expected = fingerprint(selected)
@@ -789,6 +886,9 @@ class MultiFileApp(SheetDockApp):
             self.format_status('保存完了')
         self.labels()
         return True
+
+    def validate_save_extension(self, tab, path):
+        """Optional format guard used by the integrated application."""
 
     def save(self):
         if self.active is not None:
@@ -835,6 +935,7 @@ class MultiFileApp(SheetDockApp):
             sheet.headers(header if header is not None else [])
             sheet.reset_undos()
             sheet.set_column_widths(tab.session.editor.column_widths)
+            self.apply_row_heights(tab, sheet)
         self.labels()
         # 再読込は保存の代わりではないので、閉じる操作はここで止める。
         return False
@@ -918,7 +1019,8 @@ def main():
         root = tk.Tk()
         root.withdraw()
         apply_icon(root)
-        app = MultiFileApp(root)
+        from .mixed_gui import SheetDockApp as IntegratedApp
+        app = IntegratedApp(root)
         def callback_error(exc_type, value, traceback):
             record_failure('gui_callback', value)
             messagebox.showerror('画面処理のエラー', '画面処理でエラーが発生しました。編集中の内容を確認してください。', parent=root)

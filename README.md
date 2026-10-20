@@ -1,21 +1,25 @@
 # SheetDock
 
-SheetDock 1.0.0はCSVファイルを閲覧・編集するWindowsアプリです。複数ファイルタブ・編集・上書き保存・別名保存に対応します。XLSXは後続の開発段階です。配布exeはWindowsビルドと実機確認後に公開します。
+現在のソースは **1.1.0（Phase 2対応）** です。正式版のWindows配布物はビルド・確認後に公開します。CSV・TSVとXLSXを同じファイルタブで開けます。公開済み1.0.0はCSV専用です。
+
+XLSXでは型を保つ直接セル編集、シートタブ、条件付きの行列挿入・削除と末尾追加、行高・列幅のドラッグ／数値指定、Undo/Redo、検索・文字列置換、選択シートのCSV出力、安全な保存に対応します。数式セル・結合範囲の編集を制限し、未対応機能を検出したブックは読み取り専用にします。
+
+対応範囲・制限と要件照合は[docs/Phase2_Review.md](docs/Phase2_Review.md)、実装経緯と機能別の確認手順は[docs/Phase2_Integration.md](docs/Phase2_Integration.md)、利用者向けの操作説明は[DISTRIBUTION_README.md](DISTRIBUTION_README.md)を参照してください。
 
 ## 開発環境での起動
 
 Python 3.12とTkinterを使用します。SheetDockのルートで仮想環境を有効にして実行してください。
 
 ```powershell
-python -m pip install tksheet==7.6.0 pytest
+python -m pip install -e ".[test]"
 python -m pytest -q
 python -m sheetdock
 ```
 
 既に依存パッケージが導入済みならインストールは不要です。
-pytestは既定で `tests` 内の本体テストのみを実行します。現在253件です。
+pytestは既定で `tests` 内の本体テストのみを実行します。現在747件です。XLSXの検証済みテストも本体モジュールを対象に移しました。
 
-## 現在の機能
+## CSVの機能
 
 - 複数CSVをタブで開く。同じパスを再度開いた場合は既存タブへ切り替える。
 - CSVの読込。文字コードは自動／UTF-8／CP932、区切りはカンマ／タブ／セミコロン、見出しはあり／なしを選択。
@@ -53,9 +57,11 @@ pytestは既定で `tests` 内の本体テストのみを実行します。現�
 | docs/SheetDock_Requirements_v1.0.md | 確定要件 |
 | probes | 技術検証時のコードとサンプル。本体からは参照しない |
 
-## 次の実装
+## 検証状況と次の作業
 
-ファイルごとの列幅保存に対応しました。エラー・警告ログに対応しました。大容量警告にも対応しました。Windowsビルドと配布ZIP作成はbuild_release.pyを使用します。exe版の確認はこれから行います。XLSXはPhase 2です。
+2026-10-20、dev12はWindowsソース版747件成功（66.26秒）と実機確認1～8、Windowsビルド時747件成功（66.53秒）、配布ZIP生成とexe実機確認を完了しました。全38要件を照合し、対応範囲と制限を明記したうえで1.1.0正式リリース準備へ進めると判断しています。
+
+照合結果・未確認環境・正式化の手順とRelease説明の下書きは[docs/Phase2_Review.md](docs/Phase2_Review.md)を参照してください。ソースのVersionと配布説明は1.1.0へ更新済みです。機能は検証済みdev12と同じです。正式VersionでのWindowsビルドと配布物確認後に公開します。並べ替え・フィルターはPhase 3です。
 
 現在の履歴方式は表全体のスナップショットです。大容量向けの履歴メモリ管理は後続の検証対象です。
 引用スタイルや末尾改行まで含めた元ファイルとのバイト一致は保証しません。混在レコード改行は保存方針が未確定のため読み込み時に拒否します。
@@ -286,18 +292,18 @@ python -m sheetdock.benchmark
 
 ## Windows exeのビルドと配布
 
-本体ライセンスはMIT（LICENSE）。Version 1.0.0。実行時依存はtksheet 7.6.0、ビルドにはPyInstaller 6.22.3を使います。
+本体ライセンスはMIT（LICENSE）。Version 1.1.0。実行時依存はtksheet 7.6.0、openpyxl 3.1.5、et-xmlfile 2.0.0、ビルドにはPyInstaller 6.22.3を使います。
 
 ```powershell
-python -m pip install tksheet==7.6.0 pytest pyinstaller==6.22.3
+python -m pip install -e ".[test,build]"
 python build_release.py
 ```
 
 Windowsの64bit Pythonで実行してください。テスト成功後にexeを作り、実際の環境のライセンス文書・配布README・ビルド情報を同梱し、ZIPの整合性確認とSHA-256の出力を行います。
 
-出力はdist/SheetDock-1.0.0-windows-x64.zipです。詳細な手順とexe確認項目はdocs/Windows_Release.md、利用者向け説明はDISTRIBUTION_README.mdを参照してください。
+出力はdist/SheetDock-1.1.0-windows-x64.zipと.zip.sha256です。詳細な手順とexe確認項目はdocs/Windows_Release.md、利用者向け説明はDISTRIBUTION_README.mdを参照してください。
 
-ソース版の最終確認は2026年10月13日に完了しました。ビルド後のexe実機確認とGitHub Releaseは別工程です。
+Phase 2の機能は2026年10月20日にdev12のソース版・exe版で確認済みです。正式版1.1.0のビルド・配布物確認・GitHub Releaseはこれからです。
 
 ### Tcl/Tkライセンス取得とアイコン
 

@@ -94,4 +94,4 @@ def test_restore_geometry_stays_on_screen(geometry, expected):
 def test_settings_json_does_not_include_cell_data(tmp_path):
     store = SettingsStore(tmp_path / 'settings.json')
     store.update(recent_file=tmp_path / 'data.csv')
-    assert set(json.loads(store.path.read_text())) == {'version', 'backup_enabled', 'window_geometry', 'recent_files', 'dialog_geometry', 'file_widths'}
+    assert set(json.loads(store.path.read_text())) == {'version', 'backup_enabled', 'window_geometry', 'recent_files', 'dialog_geometry', 'file_widths', 'file_heights'}

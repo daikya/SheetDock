@@ -23,6 +23,22 @@ ROOT = Path(__file__).resolve().parent
 REQUIRED_DOCS = ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'DISTRIBUTION_README.md')
 
 
+def distribution_readme(version):
+    text = (ROOT / 'DISTRIBUTION_README.md').read_text(encoding='utf-8')
+    if '{{VERSION}}' not in text:
+        raise ValueError('配布READMEのVersion差込位置がありません。')
+    return text.replace('{{VERSION}}', version)
+
+
+def prepare_distribution_docs(bundle, version):
+    for name in REQUIRED_DOCS:
+        source = ROOT / name
+        if name == 'DISTRIBUTION_README.md':
+            (bundle / name).write_text(distribution_readme(version), encoding='utf-8')
+        else:
+            shutil.copy2(source, bundle / name)
+
+
 def copy_license_group(paths, destination, label):
     sources = sorted({Path(path).resolve() for path in paths if Path(path).is_file()})
     if not sources:
@@ -38,7 +54,7 @@ def copy_license_group(paths, destination, label):
 
 def package_license_paths(name):
     dist = importlib.metadata.distribution(name)
-    return [Path(dist.locate_file(item)) for item in dist.files or [] if Path(str(item)).name.lower().startswith(('license', 'copying', 'copyright'))]
+    return [Path(dist.locate_file(item)) for item in dist.files or [] if Path(str(item)).name.lower().startswith(('license', 'licence', 'copying', 'copyright'))]
 
 
 def runtime_versions():
@@ -92,7 +108,7 @@ def collect_licenses(bundle, *, python_home=None, package_paths=None, versions=N
             retrieved.append(download_runtime_license(name, versions[name], destination, downloader))
             sources = [destination]
         copied += copy_license_group(sources, output / name, name)
-    for name in ('tksheet', 'pyinstaller'):
+    for name in ('tksheet', 'pyinstaller', 'openpyxl', 'et-xmlfile'):
         paths = package_paths[name] if package_paths is not None else package_license_paths(name)
         copied += copy_license_group(paths, output / name, name)
     (output / 'INDEX.txt').write_text('\n'.join(str(p.relative_to(bundle)).replace(os.sep, '/') for p in copied) + '\n', encoding='utf-8')
@@ -105,16 +121,16 @@ def validate_bundle(bundle):
     for name in REQUIRED_DOCS:
         if not (bundle / name).is_file():
             raise ValueError(f'配布文書がありません：{name}')
-    for group in ('Python', 'Tcl', 'Tk', 'tksheet', 'pyinstaller'):
+    for group in ('Python', 'Tcl', 'Tk', 'tksheet', 'pyinstaller', 'openpyxl', 'et-xmlfile'):
         if not list((bundle / 'licenses' / group).glob('*')):
             raise ValueError(f'ライセンス文書がありません：{group}')
     if not (bundle / 'licenses' / 'INDEX.txt').is_file() or not (bundle / 'BUILD_INFO.json').is_file():
         raise ValueError('ライセンス一覧またはビルド情報がありません。')
     for path in bundle.rglob('*'):
         parts = {part.lower() for part in path.relative_to(bundle).parts}
-        if path.is_symlink() or parts.intersection({'tests', 'probes', '.venv', 'logs', '__pycache__'}):
+        if path.is_symlink() or parts.intersection({'tests', 'probes', '.venv', '.venv312', 'logs', '__pycache__'}):
             raise ValueError(f'配布対象外の項目が混入しています：{path.name}')
-        if path.is_file() and (path.name.lower() == 'settings.json' or path.suffix.lower() in {'.csv', '.tsv', '.log', '.bak'}):
+        if path.is_file() and (path.name.lower() == 'settings.json' or path.suffix.lower() in {'.csv', '.tsv', '.xlsx', '.xlsm', '.log', '.bak'}):
             raise ValueError(f'利用者データ・検証データが混入しています：{path.name}')
 
 
@@ -147,12 +163,13 @@ def build():
     metadata = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
     if metadata['project']['version'] != __version__:
         raise ValueError('Versionの定義が一致していません。')
-    for name, expected in [('tksheet', '7.6.0'), ('pyinstaller', '6.22.3')]:
+    for name, expected in [('tksheet', '7.6.0'), ('pyinstaller', '6.22.3'), ('openpyxl', '3.1.5'), ('et-xmlfile', '2.0.0')]:
         if importlib.metadata.version(name) != expected:
             raise ValueError(f'{name}=={expected}をインストールしてください。')
     for name in REQUIRED_DOCS:
         if not (ROOT / name).is_file():
             raise FileNotFoundError(name)
+    distribution_readme(__version__)
     icon = ROOT / 'sheetdock' / 'assets' / 'sheetdock.ico'
     if not icon.is_file():
         raise FileNotFoundError('アイコンファイルがありません。更新ZIPを展開してください。')
@@ -173,10 +190,10 @@ def build():
             '--exclude-module', 'pytest', '--exclude-module', 'sheetdock.benchmark', str(ROOT / 'run_sheetdock.py'),
         ], cwd=ROOT, check=True)
         bundle = stage / 'dist' / 'SheetDock'
-        for name in REQUIRED_DOCS:
-            shutil.copy2(ROOT / name, bundle / name)
+        prepare_distribution_docs(bundle, __version__)
         shutil.copytree(notices / 'licenses', bundle / 'licenses')
         info = {'sheetdock': __version__, 'python': platform.python_version(), 'platform': platform.platform(), 'architecture': 'x64', 'tksheet': importlib.metadata.version('tksheet'), 'pyinstaller': importlib.metadata.version('pyinstaller'), 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'tests': 'passed before build', 'python_tcl_tk_source_changes': 'none'}
+        info.update({name: importlib.metadata.version(name) for name in ('openpyxl', 'et-xmlfile')})
         (bundle / 'BUILD_INFO.json').write_text(json.dumps(info, indent=2), encoding='utf-8')
         output = ROOT / 'dist' / f'SheetDock-{__version__}-windows-x64.zip'
         create_zip(bundle, output, __version__)

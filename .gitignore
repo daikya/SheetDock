@@ -1,4 +1,5 @@
 .venv/
+.venv312/
 __pycache__/
 .pytest_cache/
 *.py[cod]
@@ -6,22 +7,10 @@ __pycache__/
 build/
 dist/
 
-# 利用者データ・配布成果物
-*.csv
-*.tsv
+# 実機確認で生成したファイル
 *.bak
-*.log
-*.lock
-*.zip
-*.sha256
-settings.json
-
-# 公開する合成サンプル
-!probes/samples/utf8_bom_crlf.csv
-!probes/samples/utf8_lf.csv
-!probes/samples/cp932_crlf.csv
-!probes/samples/utf8_tab_lf.tsv
-!probes/samples/encoding_ambiguous_utf8.csv
-!probes/samples/ascii_only.csv
-!probes/samples/large_size_warning.csv
-!probes/samples/many_cells_warning.csv
+/probes/samples/*_edited*.csv
+/probes/xlsx_samples/
+/probes/xlsx_append_samples/
+/probes/xlsx_axis_samples/
+/probes/xlsx_inline_samples/

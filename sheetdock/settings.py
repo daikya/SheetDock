@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .storage import save_lock
 from .widths import fit_widths
+from .heights import fit_heights
 
 
 @dataclass
@@ -18,6 +19,7 @@ class Settings:
     recent_files: list[str] = field(default_factory=list)
     dialog_geometry: dict[str, str] = field(default_factory=dict)
     file_widths: dict[str, list[int]] = field(default_factory=dict)
+    file_heights: dict[str, list[int | None]] = field(default_factory=dict)
 
 
 def default_path():
@@ -97,9 +99,11 @@ class SettingsStore:
         dialogs = {k: v for k, v in dialogs.items() if isinstance(k, str) and len(k) <= 80 and geometry_parts(v, (80, 50))} if isinstance(dialogs, dict) else {}
         widths = value.get('file_widths', {})
         widths = {k: fit_widths(v, len(v)) for k, v in widths.items() if isinstance(k, str) and isinstance(v, list)} if isinstance(widths, dict) else {}
-        return Settings(backup if type(backup) is bool else True, geometry if geometry_parts(geometry) else None, recent_list(recent) if isinstance(recent, list) else [], dict(list(dialogs.items())[-50:]), widths)
+        heights = value.get('file_heights', {})
+        heights = {k: fit_heights(v, len(v)) for k, v in heights.items() if isinstance(k, str) and isinstance(v, list)} if isinstance(heights, dict) else {}
+        return Settings(backup if type(backup) is bool else True, geometry if geometry_parts(geometry) else None, recent_list(recent) if isinstance(recent, list) else [], dict(list(dialogs.items())[-50:]), widths, heights)
 
-    def update(self, *, backup_enabled=None, window_geometry=None, recent_file=None, dialog_key=None, dialog_geometry=None, widths_file=None, column_widths=None):
+    def update(self, *, backup_enabled=None, window_geometry=None, recent_file=None, dialog_key=None, dialog_geometry=None, widths_file=None, column_widths=None, heights_file=None, row_heights=None):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with save_lock(self.path):
             settings = self.load()
@@ -123,6 +127,11 @@ class SettingsStore:
                     raise TypeError('列幅はリストで指定してください。')
                 key = os.path.normcase(str(Path(widths_file).resolve()))
                 settings.file_widths[key] = fit_widths(column_widths, len(column_widths))
+            if heights_file is not None:
+                if not isinstance(row_heights, list):
+                    raise TypeError('行の高さはリストで指定してください。')
+                key = os.path.normcase(str(Path(heights_file).resolve()))
+                settings.file_heights[key] = fit_heights(row_heights, len(row_heights))
             payload = {'version': 1, **asdict(settings)}
             temporary = None
             try:

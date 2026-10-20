@@ -1,3 +1,3 @@
-"""SheetDock: CSV編集アプリ。"""
+"""SheetDock: CSV・XLSX編集アプリ。"""
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'

@@ -9,6 +9,10 @@ def path_key(path):
     return os.path.normcase(str(Path(path).resolve()))
 
 
+def session_dirty(session):
+    return session.editor.dirty if hasattr(session, 'editor') else session.dirty
+
+
 @dataclass(eq=False)
 class DocumentTab:
     source: Path
@@ -17,7 +21,7 @@ class DocumentTab:
 
     @property
     def title(self):
-        return self.source.name + (' *' if self.session.editor.dirty else '')
+        return self.source.name + (' *' if session_dirty(self.session) else '')
 
 
 class Documents:
@@ -57,11 +61,11 @@ class Documents:
         self.tabs.remove(tab)
 
     def may_close(self, tab, decide, save):
-        if not tab.session.editor.dirty:
+        if not session_dirty(tab.session):
             return True
         choice = decide(tab)
         if choice == 'discard':
             return True
         if choice == 'save':
-            return bool(save(tab)) and not tab.session.editor.dirty
+            return bool(save(tab)) and not session_dirty(tab.session)
         return False

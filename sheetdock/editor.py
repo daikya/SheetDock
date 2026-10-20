@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from .widths import fit_widths, DEFAULT_WIDTH
+from .heights import fit_heights
 
 
 def validate(rows):
@@ -22,9 +23,51 @@ class Editor:
         self.column_widths = fit_widths([], self.column_count)
         self._width_undo = []
         self._width_redo = []
+        self.row_heights = fit_heights([], len(rows))
+        self._height_undo = []
+        self._height_redo = []
 
     def set_column_widths(self, widths):
         self.column_widths = fit_widths(widths, self.column_count)
+
+    def resize_columns(self, widths):
+        """表示列幅だけの変更を、セル編集と同じ順序の履歴に記録する。"""
+        widths = fit_widths(widths, self.column_count)
+        if widths == self.column_widths:
+            return False
+        self._undo.append(self._rows)
+        self._width_undo.append((self.column_widths[:], widths[:]))
+        self._height_undo.append(None)
+        self._height_redo.clear()
+        self._redo.clear()
+        self._width_redo.clear()
+        self.column_widths = widths
+        self.revision += 1
+        return True
+
+    def set_row_heights(self, heights):
+        self.row_heights = fit_heights(heights, len(self._rows))
+
+    def resize_rows(self, changes):
+        heights = self.row_heights[:]
+        for row, pixels in changes.items():
+            if type(row) is not int or not 0 <= row < len(heights):
+                raise ValueError('表示中の行を指定してください')
+            value = fit_heights([pixels], 1)[0]
+            if value is None:
+                raise ValueError('行の高さが不正です')
+            heights[row] = value
+        if heights == self.row_heights:
+            return False
+        self._undo.append(self._rows)
+        self._width_undo.append(None)
+        self._height_undo.append((self.row_heights[:], heights[:]))
+        self._redo.clear()
+        self._width_redo.clear()
+        self._height_redo.clear()
+        self.row_heights = heights
+        self.revision += 1
+        return True
 
     @property
     def rows(self):
@@ -47,10 +90,15 @@ class Editor:
         validate(rows)
         return self._commit(deepcopy(rows))
 
-    def _commit(self, edited, widths=None):
+    def _commit(self, edited, widths=None, heights=None):
         validate(edited)
         if edited == self._rows:
             return False
+        old_heights = self.row_heights[:]
+        new_heights = fit_heights(old_heights if heights is None else heights, len(edited))
+        self._height_undo.append((old_heights, new_heights) if heights is not None or len(edited) != len(self._rows) else None)
+        self._height_redo.clear()
+        self.row_heights = new_heights
         old_widths = self.column_widths[:]
         count = max((len(row) for row in edited), default=0)
         new_widths = fit_widths(old_widths if widths is None else widths, count)
@@ -69,6 +117,10 @@ class Editor:
             return False
         self._redo.append(self._rows)
         self._rows = self._undo.pop()
+        heights = self._height_undo.pop()
+        self._height_redo.append(heights)
+        if heights is not None:
+            self.row_heights = heights[0][:]
         widths = self._width_undo.pop()
         self._width_redo.append(widths)
         if widths is not None:
@@ -81,6 +133,10 @@ class Editor:
             return False
         self._undo.append(self._rows)
         self._rows = self._redo.pop()
+        heights = self._height_redo.pop()
+        self._height_undo.append(heights)
+        if heights is not None:
+            self.row_heights = heights[1][:]
         widths = self._width_redo.pop()
         self._width_undo.append(widths)
         if widths is not None:
@@ -124,14 +180,17 @@ class Editor:
         self._count(count)
         edited = self.rows
         edited[index:index] = [[''] * self.column_count for _ in range(count)]
-        return self._commit(edited)
+        heights = self.row_heights[:]
+        heights[index:index] = [None] * count
+        return self._commit(edited, heights=heights)
 
     def delete_rows(self, indices):
         selected = list(indices)
         for index in selected:
             self._index(index, len(self._rows))
         removed = set(selected)
-        return self._commit([deepcopy(row) for i, row in enumerate(self._rows) if i not in removed])
+        return self._commit([deepcopy(row) for i, row in enumerate(self._rows) if i not in removed],
+                            heights=[h for i, h in enumerate(self.row_heights) if i not in removed])
 
     def insert_columns(self, index, count):
         self._index(index, self.column_count, end=True)
